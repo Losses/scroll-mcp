@@ -5,7 +5,7 @@ import { execSync } from "child_process";
 import { readFileSync } from "fs";
 import path from "path";
 import { calibrator } from "./ydotool-calibrator.js";
-import { parseShortcut } from "./keycodes.js";
+import { parseShortcut, KEYCODES } from "./keycodes.js";
 
 const ATTACHMENTS_DIR = path.join(
   process.env.ASTRBOT_ROOT ?? process.cwd(),
@@ -15,6 +15,13 @@ const ATTACHMENTS_DIR = path.join(
 const server = new McpServer({ name: "scroll-desktop", version: "0.4.0" });
 
 // ── types ─────────────────────────────────────────────────────────────────────
+
+interface ExecError {
+  stdout?: Buffer;
+  stderr?: Buffer;
+  status?: number;
+  message: string;
+}
 
 interface Rect {
   x: number;
@@ -52,11 +59,12 @@ function run(cmd: string): {
   try {
     const stdout = execSync(cmd, { timeout: 10000 }).toString();
     return { stdout, stderr: "", exit_code: 0 };
-  } catch (e: any) {
+  } catch (e) {
+    const error = e as ExecError;
     return {
-      stdout: e.stdout?.toString() ?? "",
-      stderr: e.stderr?.toString() ?? e.message,
-      exit_code: e.status ?? 1,
+      stdout: error.stdout?.toString() ?? "",
+      stderr: error.stderr?.toString() ?? error.message ?? "Unknown error",
+      exit_code: error.status ?? 1,
     };
   }
 }
@@ -311,8 +319,8 @@ server.registerTool(
           },
         ],
       };
-    } catch (e: any) {
-      return { content: [txt({ error: e.message })] };
+    } catch (e) {
+      return { content: [txt({ error: e instanceof Error ? e.message : "Unknown error" })] };
     }
   },
 );
@@ -339,8 +347,8 @@ server.registerTool(
           },
         ],
       };
-    } catch (e: any) {
-      return { content: [txt({ error: e.message })] };
+    } catch (e) {
+      return { content: [txt({ error: e instanceof Error ? e.message : "Unknown error" })] };
     }
   },
 );
@@ -491,8 +499,8 @@ server.registerTool(
           }),
         ],
       };
-    } catch (e: any) {
-      return { content: [txt({ error: e.message })] };
+    } catch (e) {
+      return { content: [txt({ error: e instanceof Error ? e.message : "Unknown error" })] };
     }
   },
 );
@@ -564,31 +572,117 @@ server.registerTool(
 );
 
 server.registerTool(
+  "list_keys",
+  {
+    title: "List Supported Keys",
+    description:
+      "List all supported key names for use with key_shortcut. " +
+      "Returns a machine-optimized JSON mapping key names to their Linux keycode values. " +
+      "Use this to programmatically determine available keys without parsing human-readable descriptions.",
+    inputSchema: {
+      category: z
+        .enum(["all", "modifiers", "letters", "numbers", "function", "arrows", "special", "media"])
+        .default("all")
+        .describe("Filter keys by category (default: all)"),
+    },
+  },
+  async ({ category }) => {
+    // Categorize keys for efficient filtering
+    const categories: Record<string, string[]> = {
+      modifiers: [
+        "CTRL", "CONTROL", "SHIFT", "ALT", "SUPER", "WIN", "META",
+        "LEFTCTRL", "RIGHTCTRL", "LEFTSHIFT", "RIGHTSHIFT",
+        "LEFTALT", "RIGHTALT", "LEFTMETA", "RIGHTMETA"
+      ],
+      letters: [
+        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+        "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"
+      ],
+      numbers: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+      function: [
+        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"
+      ],
+      arrows: ["UP", "DOWN", "LEFT", "RIGHT", "PAGEUP", "PAGEDOWN", "HOME", "END"],
+      special: [
+        "ENTER", "RETURN", "TAB", "ESC", "ESCAPE", "SPACE", "BACKSPACE",
+        "DELETE", "DEL", "INSERT", "CAPSLOCK", "NUMLOCK", "SCROLLLOCK",
+        "PRINT", "PRINTSCREEN", "PAUSE", "BREAK", "MENU", "CONTEXTMENU"
+      ],
+      media: [
+        "MUTE", "VOLUMEDOWN", "VOLUMEUP", "PLAYPAUSE", "NEXTSONG", "PREVIOUSSONG"
+      ],
+    };
+
+    if (category === "all") {
+      return {
+        content: [
+          txt({
+            format: "key_name -> linux_keycode",
+            total_keys: Object.keys(KEYCODES).length,
+            keys: KEYCODES,
+            categories: Object.keys(categories).reduce((acc, cat) => {
+              const catKeys = categories[cat];
+              if (catKeys) {
+                acc[cat] = catKeys.length;
+              }
+              return acc;
+            }, {} as Record<string, number>),
+          }),
+        ],
+      };
+    }
+
+    // Filter by category
+    const categoryKeys = categories[category] || [];
+    const filtered: Record<string, number> = {};
+    for (const key of categoryKeys) {
+      if (KEYCODES[key] !== undefined) {
+        filtered[key] = KEYCODES[key];
+      }
+    }
+
+    return {
+      content: [
+        txt({
+          category,
+          count: Object.keys(filtered).length,
+          keys: filtered,
+        }),
+      ],
+    };
+  },
+);
+
+server.registerTool(
   "key_shortcut",
   {
     title: "Key Shortcut",
     description:
-      "Send a keyboard shortcut. " +
-      "Supports human-readable shortcuts like 'CTRL+S', 'CTRL+SHIFT+C', 'ALT+TAB', 'SUPER+ENTER'. " +
-      "Separate multiple keys with '+'. Modifiers: CTRL, SHIFT, ALT, SUPER/WIN/META. " +
+      "Send keyboard shortcuts. Supports both single shortcut and array of shortcuts. " +
+      "Human-readable format: 'CTRL+S', 'CTRL+SHIFT+C', 'ALT+TAB', 'SUPER+ENTER'. " +
+      "Separate keys with '+'. Modifiers: CTRL, SHIFT, ALT, SUPER/WIN/META. " +
       "Examples: 'CTRL+C', 'CTRL+SHIFT+T', 'ALT+F4', 'SUPER+D'. " +
-      "For advanced usage, you can still use the raw 'keys' parameter with keycode arrays.",
+      "Use 'list_keys' tool to see all supported key names.",
     inputSchema: {
       shortcut: z
         .string()
         .optional()
-        .describe("Human-readable shortcut string (e.g., 'CTRL+S', 'CTRL+SHIFT+C')"),
+        .describe("Single human-readable shortcut string (e.g., 'CTRL+S', 'CTRL+SHIFT+C')"),
+      shortcuts: z
+        .array(z.string())
+        .optional()
+        .describe("Array of shortcuts to execute in sequence (e.g., ['CTRL+C', 'CTRL+V'])"),
       keys: z
         .array(z.array(z.number().int()))
         .optional()
-        .describe("[[keycode, action], ...] action: 1=press 0=release (advanced)"),
+        .describe("[[keycode, action], ...] action: 1=press 0=release (advanced only)"),
       ctrl_c: z
         .boolean()
         .default(false)
         .describe("Send Ctrl+C safely (avoids SIGINT race)"),
     },
   },
-  async ({ shortcut, keys, ctrl_c }) => {
+  async ({ shortcut, shortcuts, keys, ctrl_c }) => {
     // Handle special Ctrl+C case
     if (ctrl_c)
       return {
@@ -601,18 +695,56 @@ server.registerTool(
         ],
       };
 
-    // Parse human-readable shortcut
+    // Determine which shortcuts to process
+    let shortcutList: string[] = [];
     if (shortcut) {
-      const result = parseShortcut(shortcut);
-      if (result.error) {
-        return { content: [txt({ error: result.error, input: shortcut })] };
+      shortcutList = [shortcut];
+    } else if (shortcuts && shortcuts.length > 0) {
+      shortcutList = shortcuts;
+    }
+
+    // Parse and execute human-readable shortcuts
+    if (shortcutList.length > 0) {
+      interface ShortcutResult {
+        shortcut: string;
+        command: string;
+        result: { stdout: string; stderr: string; exit_code: number };
       }
+
+      interface ShortcutError {
+        shortcut: string;
+        error: string;
+      }
+
+      const results: ShortcutResult[] = [];
+      const errors: ShortcutError[] = [];
+
+      for (const s of shortcutList) {
+        const result = parseShortcut(s);
+        if (result.error) {
+          errors.push({ shortcut: s, error: result.error });
+        } else {
+          const cmdResult = run(`ydotool key ${result.keys}`);
+          results.push({
+            shortcut: s,
+            command: `ydotool key ${result.keys}`,
+            result: cmdResult,
+          });
+          // Small delay between shortcuts to avoid overwhelming the system
+          if (shortcutList.length > 1) {
+            run("sleep 0.05");
+          }
+        }
+      }
+
       return {
         content: [
           txt({
-            shortcut,
-            command: `ydotool key ${result.keys}`,
-            result: run(`ydotool key ${result.keys}`),
+            success: results,
+            errors,
+            total: shortcutList.length,
+            succeeded: results.length,
+            failed: errors.length,
           }),
         ],
       };
