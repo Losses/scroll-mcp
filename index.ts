@@ -217,6 +217,49 @@ server.registerTool(
 );
 
 server.registerTool(
+  "drag_in_window",
+  {
+    title: "Drag in Window",
+    description:
+      "Click-and-drag from one position to another within a window. " +
+      "Typical use: dragging variables into analysis boxes in Jamovi, moving elements in editors, etc. " +
+      "All coordinates are pixel offsets from the window's top-left corner AS SEEN IN THE SCREENSHOT. " +
+      "Coordinate math (window origin + HiDPI ÷2) is handled internally.",
+    inputSchema: {
+      ...WindowQuery,
+      from_x: z.number().int().describe("Drag start X (screenshot pixels from window left edge)"),
+      from_y: z.number().int().describe("Drag start Y (screenshot pixels from window top edge)"),
+      to_x:   z.number().int().describe("Drag end X (screenshot pixels from window left edge)"),
+      to_y:   z.number().int().describe("Drag end Y (screenshot pixels from window top edge)"),
+    },
+  },
+  async ({ by, value, from_x, from_y, to_x, to_y }) => {
+    const w = findWindow(by, value);
+    if (!w) return { content: [txt({ error: "No window matched", by, value })] };
+
+    const rect = focusAndGetRect(w);
+
+    const sx = rect.x + Math.floor(from_x / 2);
+    const sy = rect.y + Math.floor(from_y / 2);
+    const ex = rect.x + Math.floor(to_x / 2);
+    const ey = rect.y + Math.floor(to_y / 2);
+
+    run(`ydotool mousemove --absolute -x ${sx} -y ${sy}`);
+    run("ydotool click 0x40");           // mousedown
+    run("sleep 0.1");
+    run(`ydotool mousemove --absolute -x ${ex} -y ${ey}`);
+    run("sleep 0.1");
+    const r = run("ydotool click 0x80"); // mouseup
+
+    return { content: [txt({
+      dragged: { from: { ydotool_x: sx, ydotool_y: sy }, to: { ydotool_x: ex, ydotool_y: ey } },
+      window:  { id: w.id, name: w.name, rect },
+      result:  r,
+    })] };
+  }
+);
+
+server.registerTool(
   "type_text",
   {
     title: "Type Text",
