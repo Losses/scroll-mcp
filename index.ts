@@ -3,7 +3,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { execSync } from "child_process";
 import { readFileSync } from "fs";
+import path from "path";
 
+const ATTACHMENTS_DIR = path.join(
+  process.env.ASTRBOT_ROOT ?? process.cwd(),
+  "data",
+  "attachments",
+);
 const server = new McpServer({ name: "scroll-desktop", version: "0.3.0" });
 
 // ── types ─────────────────────────────────────────────────────────────────────
@@ -108,12 +114,14 @@ function focusAndGetRect(w: WindowInfo): Rect {
 }
 
 function screenshotRect(rect: Rect): Buffer {
-  const path = "/tmp/astrbot_mcp_window.png";
+  const filename = `screenshot_${Date.now()}.png`;
+  const dest = path.join(ATTACHMENTS_DIR, filename);
+
   const r = run(
-    `grim -g "${rect.x},${rect.y} ${rect.width}x${rect.height}" ${path}`,
+    `grim -g "${rect.x},${rect.y} ${rect.width}x${rect.height}" ${dest}`,
   );
   if (r.exit_code !== 0) throw new Error(`grim failed: ${r.stderr}`);
-  return readFileSync(path);
+  return readFileSync(dest);
 }
 
 function img(buf: Buffer) {
@@ -192,7 +200,15 @@ server.registerTool(
       return { content: [txt({ error: "No window matched", by, value })] };
     try {
       const rect = focusAndGetRect(w);
-      return { content: [img(screenshotRect(rect))] };
+      return {
+        content: [
+          img(screenshotRect(rect)),
+          {
+            type: "text" as const,
+            text: "Describe what you see in plain text. Do NOT use markdown image syntax or file:// links.",
+          },
+        ],
+      };
     } catch (e: any) {
       return { content: [txt({ error: e.message })] };
     }
@@ -211,7 +227,15 @@ server.registerTool(
     const path = "/tmp/astrbot_mcp_full.png";
     const r = run(`grim ${path}`);
     if (r.exit_code !== 0) return { content: [txt({ error: r.stderr })] };
-    return { content: [img(readFileSync(path))] };
+    return {
+      content: [
+        img(readFileSync(path)),
+        {
+          type: "text" as const,
+          text: "Describe what you see in plain text. Do NOT use markdown image syntax or file:// links.",
+        },
+      ],
+    };
   },
 );
 
