@@ -4,6 +4,7 @@ import { z } from "zod";
 import { execSync } from "child_process";
 import { readFileSync } from "fs";
 import path from "path";
+import { calibrator } from "./ydotool-calibrator.js";
 
 const ATTACHMENTS_DIR = path.join(
   process.env.ASTRBOT_ROOT ?? process.cwd(),
@@ -182,6 +183,17 @@ function toLogical(physicalOffset: number, scale: number): number {
   return Math.round(physicalOffset / scale);
 }
 
+// Convert Wayland logical coordinates to ydotool coordinates using calibration
+async function toYdotoolCoords(waylandLogicalX: number, waylandLogicalY: number): Promise<{ x: number; y: number }> {
+  const scale = getScaleForRect({ x: waylandLogicalX, y: waylandLogicalY, width: 0, height: 0 });
+  const physicalX = Math.round(waylandLogicalX * scale);
+  const physicalY = Math.round(waylandLogicalY * scale);
+
+  // Convert physical to ydotool logical using calibration
+  const ydotool = await calibrator.toLogical({ x: physicalX, y: physicalY });
+  return ydotool;
+}
+
 // Shared WindowQuery schema
 const WindowQuery = {
   by: z
@@ -337,10 +349,13 @@ server.registerTool(
 
     // rect is logical coords; screenshot pixels are physical.
     // Convert: logical_click = window_origin + (physical_offset / scale)
-    const tx = rect.x + toLogical(rel_x, scale);
-    const ty = rect.y + toLogical(rel_y, scale);
+    const waylandLogicalX = rect.x + toLogical(rel_x, scale);
+    const waylandLogicalY = rect.y + toLogical(rel_y, scale);
 
-    run(`ydotool mousemove --absolute -x ${tx} -y ${ty}`);
+    // Convert to ydotool coordinates using calibration
+    const ydotoolCoords = await toYdotoolCoords(waylandLogicalX, waylandLogicalY);
+
+    run(`ydotool mousemove --absolute -x ${ydotoolCoords.x} -y ${ydotoolCoords.y}`);
 
     let r;
     if (button === "right") r = run("ydotool click 0xC1");
@@ -352,7 +367,8 @@ server.registerTool(
     return {
       content: [
         txt({
-          clicked: { ydotool_x: tx, ydotool_y: ty },
+          clicked: { ydotool_x: ydotoolCoords.x, ydotool_y: ydotoolCoords.y },
+          wayland_logical: { x: waylandLogicalX, y: waylandLogicalY },
           scale,
           window: { id: w.id, name: w.name, rect },
           result: r,
@@ -399,15 +415,20 @@ server.registerTool(
     const rect = focusAndGetRect(w);
     const scale = getScaleForRect(rect);
 
-    const sx = rect.x + toLogical(from_x, scale);
-    const sy = rect.y + toLogical(from_y, scale);
-    const ex = rect.x + toLogical(to_x, scale);
-    const ey = rect.y + toLogical(to_y, scale);
+    // Calculate Wayland logical coordinates
+    const startWaylandX = rect.x + toLogical(from_x, scale);
+    const startWaylandY = rect.y + toLogical(from_y, scale);
+    const endWaylandX = rect.x + toLogical(to_x, scale);
+    const endWaylandY = rect.y + toLogical(to_y, scale);
 
-    run(`ydotool mousemove --absolute -x ${sx} -y ${sy}`);
+    // Convert to ydotool coordinates
+    const startYdool = await toYdotoolCoords(startWaylandX, startWaylandY);
+    const endYdool = await toYdotoolCoords(endWaylandX, endWaylandY);
+
+    run(`ydotool mousemove --absolute -x ${startYdool.x} -y ${startYdool.y}`);
     run("ydotool click 0x40"); // mousedown
     run("sleep 0.1");
-    run(`ydotool mousemove --absolute -x ${ex} -y ${ey}`);
+    run(`ydotool mousemove --absolute -x ${endYdool.x} -y ${endYdool.y}`);
     run("sleep 0.1");
     const r = run("ydotool click 0x80"); // mouseup
 
@@ -415,8 +436,8 @@ server.registerTool(
       content: [
         txt({
           dragged: {
-            from: { ydotool_x: sx, ydotool_y: sy },
-            to: { ydotool_x: ex, ydotool_y: ey },
+            from: { ydotool_x: startYdool.x, ydotool_y: startYdool.y, wayland_logical: { x: startWaylandX, y: startWaylandY } },
+            to: { ydotool_x: endYdool.x, ydotool_y: endYdool.y, wayland_logical: { x: endWaylandX, y: endWaylandY } },
           },
           scale,
           window: { id: w.id, name: w.name, rect },
@@ -456,10 +477,13 @@ server.registerTool(
 
     const rect = focusAndGetRect(w);
     const scale = getScaleForRect(rect);
-    const tx = rect.x + toLogical(rel_x, scale);
-    const ty = rect.y + toLogical(rel_y, scale);
 
-    run(`ydotool mousemove --absolute -x ${tx} -y ${ty}`);
+    const waylandLogicalX = rect.x + toLogical(rel_x, scale);
+    const waylandLogicalY = rect.y + toLogical(rel_y, scale);
+
+    const ydotoolCoords = await toYdotoolCoords(waylandLogicalX, waylandLogicalY);
+
+    run(`ydotool mousemove --absolute -x ${ydotoolCoords.x} -y ${ydotoolCoords.y}`);
 
     // 0xC3 = scroll up, 0xC4 = scroll down
     const btn = direction === "up" ? "0xC3" : "0xC4";
@@ -471,7 +495,7 @@ server.registerTool(
     return {
       content: [
         txt({
-          scrolled: { direction, clicks, at: { ydotool_x: tx, ydotool_y: ty } },
+          scrolled: { direction, clicks, at: { ydotool_x: ydotoolCoords.x, ydotool_y: ydotoolCoords.y, wayland_logical: { x: waylandLogicalX, y: waylandLogicalY } } },
           scale,
           result: last,
         }),
