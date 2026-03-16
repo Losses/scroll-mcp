@@ -1,0 +1,16 @@
+[Unit]
+Description=AstrBot
+After=network.target
+
+[Service]
+ExecStart=/bin/sh -c 'ln -sf $(ls /run/user/1000/scroll-ipc.*.sock | head -1) /run/user/1000/scroll-ipc.sock; exec /[YOUR HOME]/.local/share/uv/tools/astrbot/bin/astrbot run'
+WorkingDirectory=[YOUR HOME]
+Environment=LD_LIBRARY_PATH=/run/current-system/sw/lib
+Environment=PATH=/run/current-system/sw/bin:/[YOUR HOME]/.nix-profile/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-1
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
