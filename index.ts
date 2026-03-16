@@ -10,7 +10,7 @@ const ATTACHMENTS_DIR = path.join(
   "data",
   "attachments",
 );
-const server = new McpServer({ name: "scroll-desktop", version: "0.3.0" });
+const server = new McpServer({ name: "scroll-desktop", version: "0.4.0" });
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -31,6 +31,13 @@ interface WindowInfo {
   class: string | null;
   instance: string | null;
   window_role: string | null;
+}
+
+interface OutputInfo {
+  name: string;
+  scale: number;
+  rect: Rect;
+  focused: boolean;
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -68,16 +75,42 @@ function getTree(): WindowInfo[] {
   }
 }
 
-/**
- * WindowQuery: find a window by { by, value }.
- * by:    "name"     — substring match on window title
- *        "app_id"   — substring match on app_id (Wayland native)
- *        "class"    — substring match on WM_CLASS (XWayland / Flatpak, e.g. "jamovi")
- *        "instance" — substring match on WM_INSTANCE
- *        "shell"    — exact match: "xwayland" | "xdg_shell"
- *        "pid"      — exact numeric match
- *        "id"       — exact Scroll node id
- */
+// Read scale factor dynamically from scrollmsg get_outputs.
+// Falls back to 1.0 if parsing fails.
+function getOutputs(): OutputInfo[] {
+  const r = run(
+    `scrollmsg -t get_outputs | jq '[.[] | {name, scale, focused, rect: {x: .rect.x, y: .rect.y, width: .rect.width, height: .rect.height}}]'`,
+  );
+  try {
+    return JSON.parse(r.stdout);
+  } catch {
+    return [];
+  }
+}
+
+// Returns the scale factor for the output that contains the given logical rect.
+// Falls back to the focused output, then to 1.0.
+function getScaleForRect(rect: Rect): number {
+  const outputs = getOutputs();
+  if (!outputs.length) return 1.0;
+
+  // Find which output contains the window's center point
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const match = outputs.find(
+    (o) =>
+      cx >= o.rect.x &&
+      cx < o.rect.x + o.rect.width &&
+      cy >= o.rect.y &&
+      cy < o.rect.y + o.rect.height,
+  );
+  if (match) return match.scale;
+
+  // Fall back to focused output
+  const focused = outputs.find((o) => o.focused);
+  return focused?.scale ?? 1.0;
+}
+
 function findWindow(by: string, value: string): WindowInfo | null {
   const num = parseInt(value, 10);
   for (const w of getTree()) {
@@ -113,15 +146,22 @@ function focusAndGetRect(w: WindowInfo): Rect {
   return getTree().find((x) => x.id === w.id)?.rect ?? w.rect;
 }
 
-function screenshotRect(rect: Rect): Buffer {
+function screenshotRect(rect: Rect): { buf: Buffer; filename: string } {
   const filename = `screenshot_${Date.now()}.png`;
   const dest = path.join(ATTACHMENTS_DIR, filename);
-
   const r = run(
-    `grim -g "${rect.x},${rect.y} ${rect.width}x${rect.height}" ${dest}`,
+    `grim -g "${rect.x},${rect.y} ${rect.width}x${rect.height}" "${dest}"`,
   );
   if (r.exit_code !== 0) throw new Error(`grim failed: ${r.stderr}`);
-  return readFileSync(dest);
+  return { buf: readFileSync(dest), filename };
+}
+
+function screenshotFull(): { buf: Buffer; filename: string } {
+  const filename = `screenshot_full_${Date.now()}.png`;
+  const dest = path.join(ATTACHMENTS_DIR, filename);
+  const r = run(`grim "${dest}"`);
+  if (r.exit_code !== 0) throw new Error(`grim failed: ${r.stderr}`);
+  return { buf: readFileSync(dest), filename };
 }
 
 function img(buf: Buffer) {
@@ -135,7 +175,14 @@ function txt(obj: unknown) {
   return { type: "text" as const, text: JSON.stringify(obj, null, 2) };
 }
 
-// Shared WindowQuery schema used by every window-targeting tool
+// Convert screenshot-pixel offset inside a window to absolute ydotool coords.
+// grim captures at physical pixels; scrollmsg rect is in logical pixels.
+// logical = physical / scale  →  physical_offset / scale = logical_offset
+function toLogical(physicalOffset: number, scale: number): number {
+  return Math.round(physicalOffset / scale);
+}
+
+// Shared WindowQuery schema
 const WindowQuery = {
   by: z
     .enum(["name", "app_id", "class", "instance", "shell", "pid", "id"])
@@ -164,6 +211,18 @@ server.registerTool(
     inputSchema: {},
   },
   async () => ({ content: [txt(getTree())] }),
+);
+
+server.registerTool(
+  "list_outputs",
+  {
+    title: "List Outputs",
+    description:
+      "List all connected displays with their name, scale factor, and rect. " +
+      "Useful for debugging coordinate/HiDPI issues.",
+    inputSchema: {},
+  },
+  async () => ({ content: [txt(getOutputs())] }),
 );
 
 server.registerTool(
@@ -200,9 +259,12 @@ server.registerTool(
       return { content: [txt({ error: "No window matched", by, value })] };
     try {
       const rect = focusAndGetRect(w);
+      const scale = getScaleForRect(rect);
+      const { buf, filename } = screenshotRect(rect);
       return {
         content: [
-          img(screenshotRect(rect)),
+          img(buf),
+          txt({ window: { id: w.id, name: w.name, rect }, scale, filename }),
           {
             type: "text" as const,
             text: "Describe what you see in plain text. Do NOT use markdown image syntax or file:// links.",
@@ -224,18 +286,22 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const path = "/tmp/astrbot_mcp_full.png";
-    const r = run(`grim ${path}`);
-    if (r.exit_code !== 0) return { content: [txt({ error: r.stderr })] };
-    return {
-      content: [
-        img(readFileSync(path)),
-        {
-          type: "text" as const,
-          text: "Describe what you see in plain text. Do NOT use markdown image syntax or file:// links.",
-        },
-      ],
-    };
+    try {
+      const { buf, filename } = screenshotFull();
+      const outputs = getOutputs();
+      return {
+        content: [
+          img(buf),
+          txt({ outputs, filename }),
+          {
+            type: "text" as const,
+            text: "Describe what you see in plain text. Do NOT use markdown image syntax or file:// links.",
+          },
+        ],
+      };
+    } catch (e: any) {
+      return { content: [txt({ error: e.message })] };
+    }
   },
 );
 
@@ -245,8 +311,8 @@ server.registerTool(
     title: "Click in Window",
     description:
       "Click at a position inside a window. " +
-      "rel_x/rel_y are pixel offsets from the window's top-left corner AS SEEN IN THE SCREENSHOT. " +
-      "All coordinate math (window origin + HiDPI ÷2) is handled internally — do not compute yourself. " +
+      "rel_x/rel_y are pixel offsets from the window's top-left corner AS SEEN IN THE SCREENSHOT (physical pixels). " +
+      "Scale conversion (physical → logical) is handled internally — do not compute yourself. " +
       "button: left (default) | right | double.",
     inputSchema: {
       ...WindowQuery,
@@ -267,12 +333,12 @@ server.registerTool(
       return { content: [txt({ error: "No window matched", by, value })] };
 
     const rect = focusAndGetRect(w);
+    const scale = getScaleForRect(rect);
 
-    // rect is in logical coords; grim screenshots are 2× (HiDPI scale=2)
-    // rel_x/rel_y are screenshot pixels within the window
-    // ydotool coord = logical window origin + screenshot_offset / 2
-    const tx = rect.x + Math.floor(rel_x / 2);
-    const ty = rect.y + Math.floor(rel_y / 2);
+    // rect is logical coords; screenshot pixels are physical.
+    // Convert: logical_click = window_origin + (physical_offset / scale)
+    const tx = rect.x + toLogical(rel_x, scale);
+    const ty = rect.y + toLogical(rel_y, scale);
 
     run(`ydotool mousemove --absolute -x ${tx} -y ${ty}`);
 
@@ -287,6 +353,7 @@ server.registerTool(
       content: [
         txt({
           clicked: { ydotool_x: tx, ydotool_y: ty },
+          scale,
           window: { id: w.id, name: w.name, rect },
           result: r,
         }),
@@ -302,8 +369,8 @@ server.registerTool(
     description:
       "Click-and-drag from one position to another within a window. " +
       "Typical use: dragging variables into analysis boxes in Jamovi, moving elements in editors, etc. " +
-      "All coordinates are pixel offsets from the window's top-left corner AS SEEN IN THE SCREENSHOT. " +
-      "Coordinate math (window origin + HiDPI ÷2) is handled internally.",
+      "All coordinates are pixel offsets from the window's top-left corner AS SEEN IN THE SCREENSHOT (physical pixels). " +
+      "Scale conversion is handled internally.",
     inputSchema: {
       ...WindowQuery,
       from_x: z
@@ -330,11 +397,12 @@ server.registerTool(
       return { content: [txt({ error: "No window matched", by, value })] };
 
     const rect = focusAndGetRect(w);
+    const scale = getScaleForRect(rect);
 
-    const sx = rect.x + Math.floor(from_x / 2);
-    const sy = rect.y + Math.floor(from_y / 2);
-    const ex = rect.x + Math.floor(to_x / 2);
-    const ey = rect.y + Math.floor(to_y / 2);
+    const sx = rect.x + toLogical(from_x, scale);
+    const sy = rect.y + toLogical(from_y, scale);
+    const ex = rect.x + toLogical(to_x, scale);
+    const ey = rect.y + toLogical(to_y, scale);
 
     run(`ydotool mousemove --absolute -x ${sx} -y ${sy}`);
     run("ydotool click 0x40"); // mousedown
@@ -350,8 +418,62 @@ server.registerTool(
             from: { ydotool_x: sx, ydotool_y: sy },
             to: { ydotool_x: ex, ydotool_y: ey },
           },
+          scale,
           window: { id: w.id, name: w.name, rect },
           result: r,
+        }),
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  "scroll_in_window",
+  {
+    title: "Scroll in Window",
+    description:
+      "Scroll up or down inside a window. Moves mouse to the given position first. " +
+      "rel_x/rel_y are screenshot pixels from window top-left. direction: up | down. " +
+      "clicks: number of scroll notches (default 3).",
+    inputSchema: {
+      ...WindowQuery,
+      rel_x: z
+        .number()
+        .int()
+        .describe("X position to scroll at (screenshot pixels)"),
+      rel_y: z
+        .number()
+        .int()
+        .describe("Y position to scroll at (screenshot pixels)"),
+      direction: z.enum(["up", "down"]).default("down"),
+      clicks: z.number().int().min(1).max(20).default(3),
+    },
+  },
+  async ({ by, value, rel_x, rel_y, direction, clicks }) => {
+    const w = findWindow(by, value);
+    if (!w)
+      return { content: [txt({ error: "No window matched", by, value })] };
+
+    const rect = focusAndGetRect(w);
+    const scale = getScaleForRect(rect);
+    const tx = rect.x + toLogical(rel_x, scale);
+    const ty = rect.y + toLogical(rel_y, scale);
+
+    run(`ydotool mousemove --absolute -x ${tx} -y ${ty}`);
+
+    // 0xC3 = scroll up, 0xC4 = scroll down
+    const btn = direction === "up" ? "0xC3" : "0xC4";
+    let last;
+    for (let i = 0; i < clicks; i++) {
+      last = run(`ydotool click ${btn}`);
+    }
+
+    return {
+      content: [
+        txt({
+          scrolled: { direction, clicks, at: { ydotool_x: tx, ydotool_y: ty } },
+          scale,
+          result: last,
         }),
       ],
     };
