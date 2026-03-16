@@ -5,6 +5,7 @@ import { execSync } from "child_process";
 import { readFileSync } from "fs";
 import path from "path";
 import { calibrator } from "./ydotool-calibrator.js";
+import { parseShortcut } from "./keycodes.js";
 
 const ATTACHMENTS_DIR = path.join(
   process.env.ASTRBOT_ROOT ?? process.cwd(),
@@ -568,21 +569,27 @@ server.registerTool(
     title: "Key Shortcut",
     description:
       "Send a keyboard shortcut. " +
-      "Common keycodes: Enter=28 Tab=15 Escape=1 Space=57 Backspace=14 " +
-      "Ctrl=29 Shift=42 Alt=56 Super=125 Up=103 Down=108 Left=105 Right=106. " +
-      "Set ctrl_c=true to send Ctrl+C safely.",
+      "Supports human-readable shortcuts like 'CTRL+S', 'CTRL+SHIFT+C', 'ALT+TAB', 'SUPER+ENTER'. " +
+      "Separate multiple keys with '+'. Modifiers: CTRL, SHIFT, ALT, SUPER/WIN/META. " +
+      "Examples: 'CTRL+C', 'CTRL+SHIFT+T', 'ALT+F4', 'SUPER+D'. " +
+      "For advanced usage, you can still use the raw 'keys' parameter with keycode arrays.",
     inputSchema: {
+      shortcut: z
+        .string()
+        .optional()
+        .describe("Human-readable shortcut string (e.g., 'CTRL+S', 'CTRL+SHIFT+C')"),
       keys: z
         .array(z.array(z.number().int()))
         .optional()
-        .describe("[[keycode, action], ...] action: 1=press 0=release"),
+        .describe("[[keycode, action], ...] action: 1=press 0=release (advanced)"),
       ctrl_c: z
         .boolean()
         .default(false)
         .describe("Send Ctrl+C safely (avoids SIGINT race)"),
     },
   },
-  async ({ keys, ctrl_c }) => {
+  async ({ shortcut, keys, ctrl_c }) => {
+    // Handle special Ctrl+C case
     if (ctrl_c)
       return {
         content: [
@@ -593,6 +600,25 @@ server.registerTool(
           ),
         ],
       };
+
+    // Parse human-readable shortcut
+    if (shortcut) {
+      const result = parseShortcut(shortcut);
+      if (result.error) {
+        return { content: [txt({ error: result.error, input: shortcut })] };
+      }
+      return {
+        content: [
+          txt({
+            shortcut,
+            command: `ydotool key ${result.keys}`,
+            result: run(`ydotool key ${result.keys}`),
+          }),
+        ],
+      };
+    }
+
+    // Fall back to raw keycode array
     if (!keys?.length) return { content: [txt({ error: "no keys provided" })] };
     return {
       content: [
