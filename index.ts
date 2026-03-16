@@ -194,6 +194,33 @@ async function toYdotoolCoords(waylandLogicalX: number, waylandLogicalY: number)
   return ydotool;
 }
 
+// Move mouse to position relative to window (abstracted base function)
+// Returns the ydotool coordinates that were used
+async function moveMouseToWindowPosition(
+  by: string,
+  value: string,
+  rel_x: number,
+  rel_y: number
+): Promise<{ x: number; y: number }> {
+  const w = findWindow(by, value);
+  if (!w) throw new Error(`No window matched: ${by}=${value}`);
+
+  const rect = focusAndGetRect(w);
+  const scale = getScaleForRect(rect);
+
+  // rect is logical coords; screenshot pixels are physical.
+  // Convert: logical_pos = window_origin + (physical_offset / scale)
+  const waylandLogicalX = rect.x + toLogical(rel_x, scale);
+  const waylandLogicalY = rect.y + toLogical(rel_y, scale);
+
+  // Convert to ydotool coordinates using calibration
+  const ydotoolCoords = await toYdotoolCoords(waylandLogicalX, waylandLogicalY);
+
+  run(`ydotool mousemove --absolute -x ${ydotoolCoords.x} -y ${ydotoolCoords.y}`);
+
+  return ydotoolCoords;
+}
+
 // Shared WindowQuery schema
 const WindowQuery = {
   by: z
@@ -347,15 +374,7 @@ server.registerTool(
     const rect = focusAndGetRect(w);
     const scale = getScaleForRect(rect);
 
-    // rect is logical coords; screenshot pixels are physical.
-    // Convert: logical_click = window_origin + (physical_offset / scale)
-    const waylandLogicalX = rect.x + toLogical(rel_x, scale);
-    const waylandLogicalY = rect.y + toLogical(rel_y, scale);
-
-    // Convert to ydotool coordinates using calibration
-    const ydotoolCoords = await toYdotoolCoords(waylandLogicalX, waylandLogicalY);
-
-    run(`ydotool mousemove --absolute -x ${ydotoolCoords.x} -y ${ydotoolCoords.y}`);
+    const ydotoolCoords = await moveMouseToWindowPosition(by, value, rel_x, rel_y);
 
     let r;
     if (button === "right") r = run("ydotool click 0xC1");
@@ -368,7 +387,6 @@ server.registerTool(
       content: [
         txt({
           clicked: { ydotool_x: ydotoolCoords.x, ydotool_y: ydotoolCoords.y },
-          wayland_logical: { x: waylandLogicalX, y: waylandLogicalY },
           scale,
           window: { id: w.id, name: w.name, rect },
           result: r,
@@ -415,17 +433,9 @@ server.registerTool(
     const rect = focusAndGetRect(w);
     const scale = getScaleForRect(rect);
 
-    // Calculate Wayland logical coordinates
-    const startWaylandX = rect.x + toLogical(from_x, scale);
-    const startWaylandY = rect.y + toLogical(from_y, scale);
-    const endWaylandX = rect.x + toLogical(to_x, scale);
-    const endWaylandY = rect.y + toLogical(to_y, scale);
+    const startYdool = await moveMouseToWindowPosition(by, value, from_x, from_y);
+    const endYdool = await moveMouseToWindowPosition(by, value, to_x, to_y);
 
-    // Convert to ydotool coordinates
-    const startYdool = await toYdotoolCoords(startWaylandX, startWaylandY);
-    const endYdool = await toYdotoolCoords(endWaylandX, endWaylandY);
-
-    run(`ydotool mousemove --absolute -x ${startYdool.x} -y ${startYdool.y}`);
     run("ydotool click 0x40"); // mousedown
     run("sleep 0.1");
     run(`ydotool mousemove --absolute -x ${endYdool.x} -y ${endYdool.y}`);
@@ -436,8 +446,8 @@ server.registerTool(
       content: [
         txt({
           dragged: {
-            from: { ydotool_x: startYdool.x, ydotool_y: startYdool.y, wayland_logical: { x: startWaylandX, y: startWaylandY } },
-            to: { ydotool_x: endYdool.x, ydotool_y: endYdool.y, wayland_logical: { x: endWaylandX, y: endWaylandY } },
+            from: { ydotool_x: startYdool.x, ydotool_y: startYdool.y },
+            to: { ydotool_x: endYdool.x, ydotool_y: endYdool.y },
           },
           scale,
           window: { id: w.id, name: w.name, rect },
@@ -445,6 +455,44 @@ server.registerTool(
         }),
       ],
     };
+  },
+);
+
+server.registerTool(
+  "move_mouse_in_window",
+  {
+    title: "Move Mouse in Window",
+    description:
+      "Move mouse cursor to a position inside a window without clicking. " +
+      "rel_x/rel_y are pixel offsets from the window's top-left corner AS SEEN IN THE SCREENSHOT (physical pixels). " +
+      "Scale conversion (physical → logical) is handled internally.",
+    inputSchema: {
+      ...WindowQuery,
+      rel_x: z
+        .number()
+        .int()
+        .describe("X pixel offset from window left edge (screenshot pixels)"),
+      rel_y: z
+        .number()
+        .int()
+        .describe("Y pixel offset from window top edge (screenshot pixels)"),
+    },
+  },
+  async ({ by, value, rel_x, rel_y }) => {
+    try {
+      const ydotoolCoords = await moveMouseToWindowPosition(by, value, rel_x, rel_y);
+
+      return {
+        content: [
+          txt({
+            moved_to: { ydotool_x: ydotoolCoords.x, ydotool_y: ydotoolCoords.y },
+            input: { by, value, rel_x, rel_y },
+          }),
+        ],
+      };
+    } catch (e: any) {
+      return { content: [txt({ error: e.message })] };
+    }
   },
 );
 
@@ -478,12 +526,7 @@ server.registerTool(
     const rect = focusAndGetRect(w);
     const scale = getScaleForRect(rect);
 
-    const waylandLogicalX = rect.x + toLogical(rel_x, scale);
-    const waylandLogicalY = rect.y + toLogical(rel_y, scale);
-
-    const ydotoolCoords = await toYdotoolCoords(waylandLogicalX, waylandLogicalY);
-
-    run(`ydotool mousemove --absolute -x ${ydotoolCoords.x} -y ${ydotoolCoords.y}`);
+    const ydotoolCoords = await moveMouseToWindowPosition(by, value, rel_x, rel_y);
 
     // 0xC3 = scroll up, 0xC4 = scroll down
     const btn = direction === "up" ? "0xC3" : "0xC4";
@@ -495,7 +538,7 @@ server.registerTool(
     return {
       content: [
         txt({
-          scrolled: { direction, clicks, at: { ydotool_x: ydotoolCoords.x, ydotool_y: ydotoolCoords.y, wayland_logical: { x: waylandLogicalX, y: waylandLogicalY } } },
+          scrolled: { direction, clicks, at: { ydotool_x: ydotoolCoords.x, ydotool_y: ydotoolCoords.y } },
           scale,
           result: last,
         }),
