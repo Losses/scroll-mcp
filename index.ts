@@ -385,11 +385,23 @@ server.registerTool(
     const ydotoolCoords = await moveMouseToWindowPosition(by, value, rel_x, rel_y);
 
     let r;
-    if (button === "right") r = run("ydotool click 0xC1");
-    else if (button === "double") {
-      run("ydotool click 0xC0");
-      r = run("ydotool click 0xC0");
-    } else r = run("ydotool click 0xC0");
+    const isXWayland = w.shell === "xwayland";
+    if (isXWayland && w.x11_window) {
+      const buttonMap: Record<string, number> = {
+        left: 1,
+        right: 3,
+        double: 1,
+      };
+      const btn = buttonMap[button];
+      const repeat = button === "double" ? 2 : 1;
+      r = run(`xdotool click --window ${w.x11_window} --repeat ${repeat} --delay 100 ${btn}`);
+    } else {
+      if (button === "right") r = run("ydotool click 0xC1");
+      else if (button === "double") {
+        run("ydotool click 0xC0");
+        r = run("ydotool click 0xC0");
+      } else r = run("ydotool click 0xC0");
+    }
 
     return {
       content: [
@@ -444,11 +456,22 @@ server.registerTool(
     const startYdool = await moveMouseToWindowPosition(by, value, from_x, from_y);
     const endYdool = await moveMouseToWindowPosition(by, value, to_x, to_y);
 
-    run("ydotool click 0x40"); // mousedown
-    run("sleep 0.1");
-    run(`ydotool mousemove --absolute -x ${endYdool.x} -y ${endYdool.y}`);
-    run("sleep 0.1");
-    const r = run("ydotool click 0x80"); // mouseup
+    const isXWayland = w.shell === "xwayland";
+    let r;
+
+    if (isXWayland && w.x11_window) {
+      run(`xdotool mousedown --window ${w.x11_window} 1`);
+      run("sleep 0.1");
+      run(`ydotool mousemove --absolute -x ${endYdool.x} -y ${endYdool.y}`);
+      run("sleep 0.1");
+      r = run(`xdotool mouseup --window ${w.x11_window} 1`);
+    } else {
+      run("ydotool click 0x40"); // mousedown
+      run("sleep 0.1");
+      run(`ydotool mousemove --absolute -x ${endYdool.x} -y ${endYdool.y}`);
+      run("sleep 0.1");
+      r = run("ydotool click 0x80"); // mouseup
+    }
 
     return {
       content: [
