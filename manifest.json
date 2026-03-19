@@ -1,0 +1,25 @@
+{
+  "manifest_version": "0.2",
+  "name": "scroll-mcp",
+  "version": "1.0.0",
+  "description": "A Model Context Protocol (MCP) server that enables AI agents to perform desktop automation on Scroll, a Wayland compositor.",
+  "author": {
+    "name": "LOSSES"
+  },
+  "homepage": "https://github.com/Losses/scroll-mcp/",
+  "server": {
+    "type": "binary",
+    "entry_point": "bun",
+    "mcp_config": {
+      "command": "/run/current-system/sw/bin/bun",
+      "args": ["run", "${__dirname}/index.ts"],
+      "env": {
+        "SCROLLSOCK": "/run/user/1000/scroll-ipc.sock",
+        "XDG_RUNTIME_DIR": "/run/user/1000",
+        "WAYLAND_DISPLAY": "wayland-1",
+        "DISPLAY": ":0"
+      }
+    }
+  },
+  "license": "MIT"
+}
