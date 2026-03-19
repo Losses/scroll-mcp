@@ -470,6 +470,52 @@ server.registerTool(
 );
 
 server.registerTool(
+  "move_mouse_on_screen",
+  {
+    title: "Move Mouse on Screen",
+    description:
+      "Move mouse cursor to an absolute position on the screen. " +
+      "This moves the mouse at the screen level, not relative to any window. " +
+      "Use list_outputs to see your screen dimensions.",
+    inputSchema: {
+      x: z
+        .number()
+        .int()
+        .describe("X position in Wayland logical pixels (absolute screen coordinate)"),
+      y: z
+        .number()
+        .int()
+        .describe("Y position in Wayland logical pixels (absolute screen coordinate)"),
+    },
+  },
+  async ({ x, y }) => {
+    try {
+      // Get screen info for debugging
+      const outputs = getOutputs();
+
+      // Convert directly to ydotool coords (same as moveMouseToWindowPosition but without window offset)
+      const ydotoolCoords = await toYdotoolCoords(x, y);
+
+      // Move the mouse
+      run(`ydotool mousemove --absolute -x ${ydotoolCoords.x} -y ${ydotoolCoords.y}`);
+
+      return {
+        content: [
+          txt({
+            input: { wayland_logical_x: x, wayland_logical_y: y },
+            moved_to: { ydotool_x: ydotoolCoords.x, ydotool_y: ydotoolCoords.y },
+            screen_info: outputs,
+            note: "Coordinates are in Wayland logical pixels. Use list_outputs to see screen dimensions.",
+          }),
+        ],
+      };
+    } catch (e) {
+      return { content: [txt({ error: e instanceof Error ? e.message : "Unknown error" })] };
+    }
+  },
+);
+
+server.registerTool(
   "move_mouse_in_window",
   {
     title: "Move Mouse in Window",
