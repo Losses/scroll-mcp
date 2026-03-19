@@ -196,12 +196,9 @@ function toLogical(physicalOffset: number, scale: number): number {
 
 // Convert Wayland logical coordinates to ydotool coordinates using calibration
 async function toYdotoolCoords(waylandLogicalX: number, waylandLogicalY: number): Promise<{ x: number; y: number }> {
-  const scale = getScaleForRect({ x: waylandLogicalX, y: waylandLogicalY, width: 0, height: 0 });
-  const physicalX = Math.round(waylandLogicalX * scale);
-  const physicalY = Math.round(waylandLogicalY * scale);
-
-  // Convert physical to ydotool logical using calibration
-  const ydotool = await calibrator.toLogical({ x: physicalX, y: physicalY });
+  // Convert logical to ydotool logical using calibration
+  // Note: calibrator.toLogical expects logical coordinates if wl-find-cursor returns logical.
+  const ydotool = await calibrator.toLogical({ x: waylandLogicalX, y: waylandLogicalY });
   return ydotool;
 }
 
