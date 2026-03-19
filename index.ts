@@ -40,6 +40,7 @@ interface WindowInfo {
   class: string | null;
   instance: string | null;
   window_role: string | null;
+  x11_window: number | null; // X11 window ID for XWayland windows
 }
 
 interface OutputInfo {
@@ -75,7 +76,8 @@ function getTree(): WindowInfo[] {
       id, name, app_id, pid, shell, rect,
       class:       .window_properties.class,
       instance:    .window_properties.instance,
-      window_role: .window_properties.window_role
+      window_role: .window_properties.window_role,
+      x11_window:  .window
     }]'`,
   );
   try {
@@ -510,8 +512,9 @@ server.registerTool(
   {
     title: "Scroll in Window",
     description:
-      "Scroll up or down inside a window. Moves mouse to the given position first. " +
-      "rel_x/rel_y are screenshot pixels from window top-left. direction: up | down. " +
+      "Scroll inside a window. Moves mouse to the given position first. " +
+      "rel_x/rel_y are screenshot pixels from window top-left. " +
+      "direction: up | down | left | right. " +
       "clicks: number of scroll notches (default 3).",
     inputSchema: {
       ...WindowQuery,
@@ -523,7 +526,7 @@ server.registerTool(
         .number()
         .int()
         .describe("Y position to scroll at (screenshot pixels)"),
-      direction: z.enum(["up", "down"]).default("down"),
+      direction: z.enum(["up", "down", "left", "right"]).default("down"),
       clicks: z.number().int().min(1).max(20).default(3),
     },
   },
@@ -537,17 +540,51 @@ server.registerTool(
 
     const ydotoolCoords = await moveMouseToWindowPosition(by, value, rel_x, rel_y);
 
-    // 0xC3 = scroll up, 0xC4 = scroll down
-    const btn = direction === "up" ? "0xC3" : "0xC4";
     let last;
-    for (let i = 0; i < clicks; i++) {
-      last = run(`ydotool click ${btn}`);
+    const isXWayland = w.shell === "xwayland";
+
+    if (isXWayland && w.x11_window) {
+      // Use xdotool for XWayland windows
+      // X11 button codes: 4=up, 5=down, 6=left, 7=right
+      const buttonMap: Record<string, number> = {
+        up: 4,
+        down: 5,
+        left: 6,
+        right: 7,
+      };
+      const button = buttonMap[direction];
+      last = run(`xdotool click --window ${w.x11_window} --repeat ${clicks} --delay 0 ${button}`);
+    } else {
+      // Use ydotool for native Wayland windows
+      // ydotool button codes: 0xC3=up, 0xC4=down
+      // Note: ydotool doesn't support horizontal scrolling
+      if (direction === "left" || direction === "right") {
+        return {
+          content: [
+            txt({
+              error: "Horizontal scrolling (left/right) is only supported for XWayland windows",
+              window_type: w.shell,
+              suggestion: "Use vertical scrolling (up/down) for native Wayland windows",
+            }),
+          ],
+        };
+      }
+      const btn = direction === "up" ? "0xC3" : "0xC4";
+      for (let i = 0; i < clicks; i++) {
+        last = run(`ydotool click ${btn}`);
+      }
     }
 
     return {
       content: [
         txt({
-          scrolled: { direction, clicks, at: { ydotool_x: ydotoolCoords.x, ydotool_y: ydotoolCoords.y } },
+          scrolled: {
+            direction,
+            clicks,
+            at: { ydotool_x: ydotoolCoords.x, ydotool_y: ydotoolCoords.y },
+            method: isXWayland && w.x11_window ? "xdotool" : "ydotool",
+            window_type: w.shell,
+          },
           scale,
           result: last,
         }),
