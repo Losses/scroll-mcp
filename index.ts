@@ -332,7 +332,7 @@ server.registerTool(
   {
     title: "Screenshot Full Desktop",
     description:
-      "Screenshot the entire desktop. Returns the image for analysis.",
+      "Screenshot the entire desktop. This is not necessary if your task only need a specific windiw. Returns the image for analysis.",
     inputSchema: {},
   },
   async () => {
